@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<title>Self Attendance</title>
+<style>
+  :root{
+    --accent:#4f8ef7; --accent2:#38d9a9; --danger:#ff6b6b;
+    --bg:#0f1226; --card:#171b34; --border:#2a2f52; --text:#eef1ff; --muted:#9aa2c8;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; font-family:'Segoe UI',Roboto,Arial,sans-serif;
+    background:linear-gradient(160deg,#0f1226,#1b1f3d 60%,#241a44);
+    color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center;
+    padding:18px;
+  }
+  .card{
+    width:100%; max-width:420px; background:var(--card); border:1px solid var(--border);
+    border-radius:18px; padding:22px 20px 26px; box-shadow:0 20px 60px rgba(0,0,0,0.45);
+  }
+  .card h1{ font-size:1.05rem; margin:0 0 4px; text-align:center; }
+  .sub{ font-size:0.78rem; color:var(--muted); text-align:center; margin-bottom:18px; }
+  .timer{
+    text-align:center; font-weight:700; font-size:0.85rem; margin-bottom:16px;
+    color:var(--accent); background:rgba(79,142,247,0.12); border:1px solid rgba(79,142,247,0.3);
+    border-radius:10px; padding:6px 10px;
+  }
+  .timer.expired{ color:var(--danger); background:rgba(255,107,107,0.12); border-color:rgba(255,107,107,0.35); }
+  label{ font-size:0.75rem; color:var(--muted); display:block; margin:14px 0 6px; }
+  input[type="text"], input[type="tel"]{
+    width:100%; background:#12152c; border:1.5px solid var(--border); border-radius:10px;
+    color:var(--text); font-size:0.95rem; padding:11px 12px; outline:none;
+  }
+  input:focus{ border-color:var(--accent); }
+  .list{
+    max-height:260px; overflow-y:auto; margin-top:8px; border:1px solid var(--border);
+    border-radius:10px; display:none;
+  }
+  .list.open{ display:block; }
+  .list-item{
+    padding:10px 12px; font-size:0.88rem; cursor:pointer; border-bottom:1px solid var(--border);
+    display:flex; gap:10px; align-items:center;
+  }
+  .list-item:last-child{ border-bottom:none; }
+  .list-item:active, .list-item:hover{ background:rgba(79,142,247,0.12); }
+  .list-item .rn{
+    font-family:monospace; font-weight:700; font-size:0.72rem; color:var(--muted);
+    background:#0f1226; border-radius:6px; padding:2px 7px; min-width:26px; text-align:center;
+  }
+  .selected-name{
+    margin-top:10px; padding:10px 12px; border-radius:10px; background:rgba(56,217,169,0.12);
+    border:1px solid rgba(56,217,169,0.35); color:var(--accent2); font-weight:700; font-size:0.9rem;
+    display:none; align-items:center; justify-content:space-between; gap:8px;
+  }
+  .selected-name.show{ display:flex; }
+  .selected-name button{
+    background:none; border:none; color:var(--muted); font-size:0.75rem; cursor:pointer; text-decoration:underline;
+  }
+  .btn{
+    width:100%; margin-top:18px; padding:13px; border:none; border-radius:12px;
+    background:linear-gradient(135deg,var(--accent2),var(--accent)); color:#04140f; font-weight:800;
+    font-size:0.95rem; cursor:pointer;
+  }
+  .btn:disabled{ opacity:0.5; cursor:not-allowed; }
+  .msg{ margin-top:14px; font-size:0.82rem; text-align:center; min-height:18px; }
+  .msg.err{ color:var(--danger); }
+  .msg.ok{ color:var(--accent2); }
+  .msg.info{ color:var(--muted); }
+  .footer-note{ margin-top:16px; font-size:0.68rem; color:var(--muted); text-align:center; }
+  .spinner{
+    width:34px; height:34px; border-radius:50%; border:3px solid var(--border);
+    border-top-color:var(--accent); margin:30px auto; animation:spin 0.8s linear infinite;
+  }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  .big-icon{ font-size:2.6rem; text-align:center; margin-bottom:6px; }
+</style>
+</head>
+<body>
+
+<div class="card" id="card">
+  <div class="spinner" id="loadingSpinner"></div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+const FIREBASE_DB_URL = "https://student-attendance-6d56b-default-rtdb.firebaseio.com";
+const FIREBASE_API_KEY = "AIzaSyB0z8G5uIAKBRd6pDf1pOtX3Zkmt6hZjk8";
+
+const qs = new URLSearchParams(location.search);
+const sessionId = qs.get('s');
+const day = qs.get('d');
+const reg = qs.get('r');
+
+const card = document.getElementById('card');
+
+let session = null;
+let selectedRn = null;
+let idToken = null;
+
+// ---- Anonymous Firebase auth (same scheme the main app uses) ----
+async function getFirebaseIdToken() {
+  if (idToken) return idToken;
+  let cached = null;
+  try { cached = JSON.parse(localStorage.getItem('tatu_fb_auth_student') || 'null'); } catch(e) {}
+  const signUrl = 'https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=' + FIREBASE_API_KEY;
+  const refreshUrl = 'https://securetoken.googleapis.com/v1/token?key=' + FIREBASE_API_KEY;
+  try {
+    if (cached && cached.refreshToken) {
+      const r = await fetch(refreshUrl, {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'grant_type=refresh_token&refresh_token=' + cached.refreshToken
+      });
+      const j = await r.json();
+      if (j.id_token) { idToken = j.id_token; return idToken; }
+    }
+    const r2 = await fetch(signUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ returnSecureToken: true }) });
+    const j2 = await r2.json();
+    if (!j2.idToken) return null;
+    localStorage.setItem('tatu_fb_auth_student', JSON.stringify({ refreshToken: j2.refreshToken }));
+    idToken = j2.idToken;
+    return idToken;
+  } catch(e) { return null; }
+}
+
+function renderError(title, msg) {
+  card.innerHTML = `
+    <div class="big-icon">⚠️</div>
+    <h1>${title}</h1>
+    <div class="sub">${msg}</div>
+  `;
+}
+
+function fmtTimer(ms) {
+  if (ms <= 0) return 'Expired';
+  const m = Math.floor(ms / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  return `${m}:${s.toString().padStart(2,'0')}`;
+}
+
+function haversineMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1), dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+async function init() {
+  if (!sessionId || day === null || reg === null) {
+    renderError('Invalid Link', 'Ye attendance link theek se nahi bana. Apne teacher se dobara QR/link maango.');
+    return;
+  }
+
+  const tok = await getFirebaseIdToken();
+  if (!tok) {
+    renderError('Connection Error', 'Server se connect nahi ho paaya. Internet check karke page reload karein.');
+    return;
+  }
+
+  let res;
+  try {
+    res = await fetch(`${FIREBASE_DB_URL}/sessions/${encodeURIComponent(sessionId)}.json?auth=${tok}`);
+    session = await res.json();
+  } catch(e) {
+    renderError('Connection Error', 'Server se data nahi mil paaya. Internet check karke page reload karein.');
+    return;
+  }
+
+  if (!session) {
+    renderError('Session Not Found', 'Ye attendance session ab available nahi hai. Apne teacher se naya QR/link maango.');
+    return;
+  }
+
+  const remaining = (session.expires || 0) - Date.now();
+  if (remaining <= 0) {
+    renderError('Session Expired', 'Ye attendance ka time khatam ho chuka hai. Apne teacher se naya QR/link maango.');
+    return;
+  }
+
+  buildForm();
+  startCountdown();
+}
+
+function buildForm() {
+  const students = session.students || {};
+  const entries = Object.entries(students).map(([rn, s]) => ({ rn, name: s.name, mobile: s.mobile || '' }));
+
+  card.innerHTML = `
+    <h1>✅ Self Attendance</h1>
+    <div class="sub">Register ${parseInt(reg) + 1} · Apna naam dhoondo aur select karo</div>
+    <div class="timer" id="timer">⏱ --:--</div>
+
+    <label>Apna naam search karo</label>
+    <input type="text" id="searchBox" placeholder="Naam type karo..." autocomplete="off"/>
+    <div class="list" id="list"></div>
+    <div class="selected-name" id="selectedName">
+      <span id="selectedNameText"></span>
+      <button id="changeBtn" type="button">Change</button>
+    </div>
+
+    <div id="mobileStep" style="display:none">
+      <label>Apna registered mobile number ke last 4 digit daalo (verify karne ke liye)</label>
+      <input type="tel" id="mobileInput" maxlength="4" placeholder="e.g. 4521" inputmode="numeric"/>
+    </div>
+
+    <button class="btn" id="markBtn" disabled>📍 Location Allow Karke Mark Karo</button>
+    <div class="msg" id="msg"></div>
+    <div class="footer-note">Attendance mark karne ke liye location dena zaroori hai. Ye sirf isi session ke liye use hoti hai.</div>
+  `;
+
+  const searchBox = document.getElementById('searchBox');
+  const list = document.getElementById('list');
+  const selectedNameBox = document.getElementById('selectedName');
+  const selectedNameText = document.getElementById('selectedNameText');
+  const mobileStep = document.getElementById('mobileStep');
+  const markBtn = document.getElementById('markBtn');
+  const msg = document.getElementById('msg');
+
+  function renderList(filter) {
+    const f = (filter || '').trim().toLowerCase();
+    const matches = entries.filter(e => !f || e.name.toLowerCase().includes(f));
+    if (!f) { list.classList.remove('open'); list.innerHTML=''; return; }
+    list.innerHTML = matches.slice(0, 30).map(e =>
+      `<div class="list-item" data-rn="${e.rn}"><span class="rn">${parseInt(e.rn)+1}</span><span>${e.name}</span></div>`
+    ).join('') || `<div class="list-item" style="color:var(--muted)">Koi match nahi mila</div>`;
+    list.classList.add('open');
+  }
+
+  searchBox.addEventListener('input', () => renderList(searchBox.value));
+
+  list.addEventListener('click', (e) => {
+    const item = e.target.closest('.list-item');
+    if (!item || !item.dataset.rn) return;
+    selectedRn = item.dataset.rn;
+    const entry = entries.find(x => x.rn === selectedRn);
+    selectedNameText.textContent = `${parseInt(selectedRn)+1}. ${entry.name}`;
+    selectedNameBox.classList.add('show');
+    searchBox.value = '';
+    searchBox.style.display = 'none';
+    list.classList.remove('open');
+    list.innerHTML = '';
+
+    if (entry.mobile && entry.mobile.replace(/\D/g,'').length >= 4) {
+      mobileStep.style.display = 'block';
+    } else {
+      mobileStep.style.display = 'none';
+    }
+    markBtn.disabled = false;
+    msg.textContent = '';
+    msg.className = 'msg';
+  });
+
+  document.getElementById('changeBtn').addEventListener('click', () => {
+    selectedRn = null;
+    selectedNameBox.classList.remove('show');
+    searchBox.style.display = 'block';
+    searchBox.value = '';
+    searchBox.focus();
+    markBtn.disabled = true;
+    mobileStep.style.display = 'none';
+  });
+
+  markBtn.addEventListener('click', () => handleMark(entries, msg, markBtn));
+}
+
+async function handleMark(entries, msg, markBtn) {
+  if (!selectedRn) return;
+  const entry = entries.find(x => x.rn === selectedRn);
+
+  const mobileInput = document.getElementById('mobileInput');
+  if (mobileInput && document.getElementById('mobileStep').style.display !== 'none') {
+    const entered = (mobileInput.value || '').replace(/\D/g,'');
+    const actualLast4 = (entry.mobile || '').replace(/\D/g,'').slice(-4);
+    if (entered.length < 4 || entered !== actualLast4) {
+      msg.textContent = '❌ Mobile number match nahi hua. Dobara check karo.';
+      msg.className = 'msg err';
+      return;
+    }
+  }
+
+  const remaining = (session.expires || 0) - Date.now();
+  if (remaining <= 0) {
+    msg.textContent = '⏱ Session expire ho gaya.';
+    msg.className = 'msg err';
+    return;
+  }
+
+  markBtn.disabled = true;
+  markBtn.textContent = '📍 Location le rahe hain...';
+  msg.textContent = '';
+  msg.className = 'msg info';
+
+  if (!navigator.geolocation) {
+    msg.textContent = '❌ Is device/browser mein location support nahi hai. Attendance mark nahi ho sakti.';
+    msg.className = 'msg err';
+    markBtn.disabled = false;
+    markBtn.textContent = '📍 Location Allow Karke Mark Karo';
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy };
+
+    if (session.geo && session.geo.radius) {
+      const dist = haversineMeters(loc.lat, loc.lng, session.geo.lat, session.geo.lng);
+      if (dist > session.geo.radius) {
+        msg.textContent = `❌ Aap college ke ${Math.round(session.geo.radius)}m radius se ${Math.round(dist)}m door hain. Attendance mark nahi ho sakti.`;
+        msg.className = 'msg err';
+        markBtn.disabled = false;
+        markBtn.textContent = '📍 Location Allow Karke Mark Karo';
+        return;
+      }
+    }
+
+    try {
+      const tok = await getFirebaseIdToken();
+      const already = await fetch(`${FIREBASE_DB_URL}/sessions/${encodeURIComponent(sessionId)}/responses/${selectedRn}.json?auth=${tok}`);
+      const existing = await already.json();
+      if (existing) {
+        msg.textContent = '✅ Aapki attendance pehle se mark ho chuki hai.';
+        msg.className = 'msg ok';
+        markBtn.textContent = '✅ Already Marked';
+        return;
+      }
+
+      const payload = { name: entry.name, location: loc, time: Date.now() };
+      const put = await fetch(`${FIREBASE_DB_URL}/sessions/${encodeURIComponent(sessionId)}/responses/${selectedRn}.json?auth=${tok}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      });
+      if (!put.ok) throw new Error('write failed');
+
+      msg.textContent = '✅ Attendance mark ho gayi! Dhanyavaad.';
+      msg.className = 'msg ok';
+      markBtn.textContent = '✅ Marked';
+    } catch(e) {
+      msg.textContent = '❌ Kuch galat ho gaya. Dobara try karo.';
+      msg.className = 'msg err';
+      markBtn.disabled = false;
+      markBtn.textContent = '📍 Location Allow Karke Mark Karo';
+    }
+  }, (err) => {
+    msg.textContent = '❌ Location allow karna zaroori hai attendance ke liye. Browser settings check karo.';
+    msg.className = 'msg err';
+    markBtn.disabled = false;
+    markBtn.textContent = '📍 Location Allow Karke Mark Karo';
+  }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 });
+}
+
+let countdownInterval = null;
+function startCountdown() {
+  clearInterval(countdownInterval);
+  countdownInterval = setInterval(() => {
+    const timerEl = document.getElementById('timer');
+    if (!timerEl) { clearInterval(countdownInterval); return; }
+    const remaining = (session.expires || 0) - Date.now();
+    if (remaining <= 0) {
+      timerEl.textContent = '⏱ Session Expired';
+      timerEl.classList.add('expired');
+      clearInterval(countdownInterval);
+      const markBtn = document.getElementById('markBtn');
+      if (markBtn) markBtn.disabled = true;
+      return;
+    }
+    timerEl.textContent = '⏱ ' + fmtTimer(remaining);
+  }, 1000);
+}
+
+init();
+})();
+</script>
+</body>
+</html>
