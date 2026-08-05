@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<title>Student Self Attendance — TATU</title>
+<style>
+  :root{
+    --bg:#0f1117; --surface:#181c27; --surface2:#1e2335; --border:#2a3050;
+    --accent:#4f8ef7; --accent2:#38d9a9; --danger:#ff6b6b; --warn:#ffd43b;
+    --text:#e8ecf4; --muted:#7b88a8;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;padding:0;min-height:100vh;background:var(--bg);}
+  body{
+    font-family:'Segoe UI',system-ui,-apple-system,sans-serif;color:var(--text);
+    display:flex;align-items:center;justify-content:center;padding:20px 16px;
+  }
+  .card{
+    width:100%;max-width:420px;background:linear-gradient(135deg,#141b35,#1a2550);
+    border:1px solid #2a3870;border-radius:20px;padding:28px 24px;
+    box-shadow:0 24px 80px rgba(0,0,0,0.6);position:relative;overflow:hidden;
+  }
+  .card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;
+    background:linear-gradient(90deg,#c8a84b,#f0d080,#c8a84b);}
+  .icon{font-size:2.6rem;text-align:center;margin-bottom:6px;}
+  h1{font-size:1.15rem;text-align:center;margin:0 0 4px;color:#e8ecf4;}
+  .sub{font-size:0.8rem;text-align:center;color:var(--muted);margin-bottom:20px;}
+  .timer{
+    text-align:center;font-size:0.95rem;font-weight:700;color:var(--accent2);
+    margin-bottom:18px;
+  }
+  .field{margin-bottom:16px;}
+  .field label{display:block;font-size:0.7rem;color:var(--muted);text-transform:uppercase;
+    letter-spacing:0.06em;margin-bottom:6px;font-weight:600;}
+  .field input{
+    width:100%;background:#0f1420;border:1.5px solid #2a3870;border-radius:10px;
+    color:var(--text);font-size:1rem;padding:13px 14px;outline:none;text-align:center;
+    letter-spacing:0.05em;font-family:'JetBrains Mono',monospace;
+  }
+  .field input:focus{border-color:var(--accent);}
+  .btn{
+    width:100%;padding:14px;border-radius:12px;border:none;font-size:0.95rem;
+    font-weight:700;cursor:pointer;font-family:inherit;
+  }
+  .btn-primary{background:linear-gradient(135deg,#4f8ef7,#38d9a9);color:#0f1117;}
+  .btn-primary:disabled{opacity:0.5;}
+  .msg{font-size:0.82rem;text-align:center;margin-top:14px;line-height:1.5;padding:10px 12px;border-radius:10px;display:none;}
+  .msg.show{display:block;}
+  .msg.err{background:rgba(255,107,107,0.12);color:var(--danger);border:1px solid rgba(255,107,107,0.3);}
+  .msg.ok{background:rgba(56,217,169,0.12);color:var(--accent2);border:1px solid rgba(56,217,169,0.3);}
+  .msg.warn{background:rgba(255,212,59,0.12);color:var(--warn);border:1px solid rgba(255,212,59,0.3);}
+  .success{text-align:center;padding:10px 0;}
+  .success .icon{color:var(--accent2);}
+  .name-tag{text-align:center;font-size:0.85rem;color:var(--muted);margin-top:-8px;margin-bottom:14px;min-height:18px;}
+  footer{text-align:center;font-size:0.68rem;color:#3a4565;margin-top:18px;}
+  .spinner{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);
+    border-top-color:#0f1117;border-radius:50%;animation:spin 0.7s linear infinite;vertical-align:middle;margin-right:6px;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+</style>
+</head>
+<body>
+
+<div class="card" id="card">
+  <div class="icon">📱</div>
+  <div id="collegeLine" style="display:none;text-align:center;font-size:0.72rem;color:#c8a84b;font-weight:700;letter-spacing:0.04em;margin-bottom:6px;text-transform:uppercase;"></div>
+  <h1>Student Self Attendance</h1>
+  <div class="sub" id="subLine">Session load ho raha hai...</div>
+  <div class="timer" id="timer"></div>
+
+  <div id="formArea" style="display:none;">
+    <div class="field">
+      <label>Apna Passcode Daalein</label>
+      <input type="text" id="passcodeInput" placeholder="jaise: pi91" maxlength="6" autocomplete="off" autocapitalize="off"/>
+    </div>
+    <div class="name-tag" id="nameTag"></div>
+    <button class="btn btn-primary" id="submitBtn" onclick="handleMark()">✅ Attendance Mark Karein</button>
+    <div class="msg" id="msgBox"></div>
+  </div>
+
+  <div id="successArea" style="display:none;" class="success">
+    <div class="icon">🎉</div>
+    <h1 id="successName"></h1>
+    <div class="sub">Aapki attendance mark ho gayi hai!</div>
+  </div>
+
+  <footer id="footerLine">TATU 4.1 · © 2026 Shreeyog Website and App Designer</footer>
+</div>
+
+<script>
+const FIREBASE_DB_URL = "https://student-attendance-6d56b-default-rtdb.firebaseio.com";
+const FIREBASE_API_KEY = "AIzaSyB0z8G5uIAKBRd6pDf1pOtX3Zkmt6hZjk8";
+
+let _fbIdToken = null, _fbTokenExpiry = 0;
+async function getFirebaseIdToken() {
+  if (_fbIdToken && Date.now() < _fbTokenExpiry) return _fbIdToken;
+  var cached = null;
+  try { cached = JSON.parse(localStorage.getItem('tatu_fb_auth') || 'null'); } catch(e) {}
+  var signUrl = 'https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=' + FIREBASE_API_KEY;
+  var refreshUrl = 'https://securetoken.googleapis.com/v1/token?key=' + FIREBASE_API_KEY;
+  try {
+    if (cached && cached.refreshToken) {
+      var r = await fetch(refreshUrl, {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'grant_type=refresh_token&refresh_token=' + cached.refreshToken
+      });
+      var j = await r.json();
+      if (j.id_token) {
+        _fbIdToken = j.id_token;
+        _fbTokenExpiry = Date.now() + (parseInt(j.expires_in) - 60) * 1000;
+        return _fbIdToken;
+      }
+    }
+    var r2 = await fetch(signUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ returnSecureToken: true }) });
+    var j2 = await r2.json();
+    if (!j2.idToken) return null;
+    localStorage.setItem('tatu_fb_auth', JSON.stringify({ refreshToken: j2.refreshToken }));
+    _fbIdToken = j2.idToken;
+    _fbTokenExpiry = Date.now() + (parseInt(j2.expiresIn) - 60) * 1000;
+    return _fbIdToken;
+  } catch(e) { return null; }
+}
+
+function haversine(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)*Math.sin(dLat/2) +
+    Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*
+    Math.sin(dLng/2)*Math.sin(dLng/2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+const params = new URLSearchParams(window.location.search);
+const sessionId = params.get('s');
+const dayParam = params.get('d');
+const regParam = params.get('r');
+
+let sessionData = null;
+let timerInterval = null;
+
+function showMsg(text, type) {
+  const box = document.getElementById('msgBox');
+  box.textContent = text;
+  box.className = 'msg show ' + type;
+}
+function clearMsg() {
+  const box = document.getElementById('msgBox');
+  box.className = 'msg';
+}
+
+function localMarkedKey() { return 'tatu_att_marked_' + sessionId; }
+
+async function init() {
+  if (!sessionId) {
+    document.getElementById('subLine').textContent = '❌ Invalid link — session ID missing hai.';
+    return;
+  }
+  if (localStorage.getItem(localMarkedKey())) {
+    document.getElementById('subLine').textContent = '';
+    document.getElementById('formArea').style.display = 'none';
+    document.getElementById('successArea').style.display = 'block';
+    document.getElementById('successName').textContent = 'Attendance pehle hi mark ho chuki hai ✅';
+    return;
+  }
+  try {
+    const tok = await getFirebaseIdToken();
+    const res = await fetch(`${FIREBASE_DB_URL}/sessions/${sessionId}.json?auth=${tok}`);
+    const data = await res.json();
+    if (!data) {
+      document.getElementById('subLine').textContent = '❌ Ye session nahi mila. Link expire ho chuka hoga.';
+      return;
+    }
+    sessionData = data;
+    if (Date.now() > (data.expires || 0)) {
+      document.getElementById('subLine').textContent = '⏱ Ye session expire ho chuka hai. Teacher se naya link maangein.';
+      document.getElementById('timer').textContent = '';
+      return;
+    }
+    if (data.college) {
+      document.getElementById('collegeLine').textContent = data.college;
+      document.getElementById('collegeLine').style.display = 'block';
+      document.getElementById('footerLine').textContent = `TATU 4.1 · © 2026 Shreeyog Website and App Designer · ${data.college}`;
+    }
+    document.getElementById('subLine').textContent = `Register ${(parseInt(regParam)||0) + 1} · Apna passcode daalein neeche`;
+    document.getElementById('formArea').style.display = 'block';
+    startTimer(data.expires);
+  } catch(e) {
+    document.getElementById('subLine').textContent = '❌ Kuch gadbad hui. Internet check karke dobara try karein.';
+  }
+}
+
+function startTimer(expires) {
+  clearInterval(timerInterval);
+  timerInterval = setInterval(() => {
+    const remaining = expires - Date.now();
+    const timerEl = document.getElementById('timer');
+    if (remaining <= 0) {
+      timerEl.textContent = '⏱ Session Expire Ho Gaya';
+      document.getElementById('formArea').style.display = 'none';
+      clearInterval(timerInterval);
+      return;
+    }
+    const mins = Math.floor(remaining / 60000);
+    const secs = Math.floor((remaining % 60000) / 1000);
+    timerEl.textContent = `⏱ ${mins}:${secs.toString().padStart(2,'0')}`;
+  }, 1000);
+}
+
+document.getElementById('passcodeInput').addEventListener('input', function() {
+  clearMsg();
+  const val = this.value.trim().toLowerCase();
+  const tag = document.getElementById('nameTag');
+  if (!sessionData || !sessionData.students || !val) { tag.textContent = ''; return; }
+  const match = Object.values(sessionData.students).find(s => (s.passcode || '').toLowerCase() === val);
+  tag.textContent = match ? `👤 ${match.name}` : '';
+});
+
+async function handleMark() {
+  clearMsg();
+  const val = document.getElementById('passcodeInput').value.trim().toLowerCase();
+  if (!val) { showMsg('Pehle apna passcode daalein', 'err'); return; }
+  if (!sessionData || !sessionData.students) { showMsg('Session data load nahi hua, dobara try karein', 'err'); return; }
+
+  let matchRn = null, matchStudent = null;
+  Object.entries(sessionData.students).forEach(([rn, s]) => {
+    if ((s.passcode || '').toLowerCase() === val) { matchRn = rn; matchStudent = s; }
+  });
+
+  if (!matchRn) { showMsg('❌ Ye passcode kisi student se match nahi hua. Sahi se daalein.', 'err'); return; }
+
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Location check ho rahi hai...';
+
+  navigator.geolocation.getCurrentPosition(async function(pos) {
+    const lat = pos.coords.latitude, lng = pos.coords.longitude;
+
+    if (sessionData.geo && sessionData.geo.lat && sessionData.geo.lng) {
+      const dist = haversine(lat, lng, sessionData.geo.lat, sessionData.geo.lng);
+      if (dist > (sessionData.geo.radius || 200)) {
+        btn.disabled = false;
+        btn.innerHTML = '✅ Attendance Mark Karein';
+        showMsg(`❌ Aap college se ${Math.round(dist)}m door hain. College ke andar aakar try karein.`, 'err');
+        return;
+      }
+    }
+
+    await submitResponse(matchRn, matchStudent, { lat, lng });
+
+  }, async function(err) {
+    btn.disabled = false;
+    btn.innerHTML = '✅ Attendance Mark Karein';
+    showMsg('⚠️ Location allow karna zaroori hai attendance mark karne ke liye. Phone Settings me Location ON karke dobara try karein.', 'warn');
+  }, { enableHighAccuracy: true, timeout: 15000 });
+}
+
+async function submitResponse(rn, student, loc) {
+  try {
+    const tok = await getFirebaseIdToken();
+    await fetch(`${FIREBASE_DB_URL}/sessions/${sessionId}/responses/${rn}.json?auth=${tok}`, {
+      method: 'PUT',
+      body: JSON.stringify({ location: loc, name: student.name, ts: Date.now() })
+    });
+    localStorage.setItem(localMarkedKey(), '1');
+    document.getElementById('formArea').style.display = 'none';
+    document.getElementById('successArea').style.display = 'block';
+    document.getElementById('successName').textContent = student.name;
+  } catch(e) {
+    const btn = document.getElementById('submitBtn');
+    btn.disabled = false;
+    btn.innerHTML = '✅ Attendance Mark Karein';
+    showMsg('❌ Save nahi hua, internet check karke dobara try karein.', 'err');
+  }
+}
+
+document.getElementById('passcodeInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') handleMark();
+});
+
+init();
+</script>
+</body>
+</html>
